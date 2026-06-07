@@ -16,6 +16,7 @@ COPY app.py .
 COPY output/incidents_24mo.parquet output/
 
 ENV DATA_PATH=output/incidents_24mo.parquet
+ENV CITY_NAME="Philadelphia, PA"
 
 EXPOSE 5000
 

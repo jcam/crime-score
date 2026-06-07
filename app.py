@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Flask web UI for the Philadelphia crime address scorer.
+Flask web UI for the crime address scorer.
 """
 
 import os
@@ -12,8 +12,11 @@ from scipy.spatial import cKDTree
 from pyproj import Transformer
 from shapely.geometry import MultiPoint
 from pathlib import Path
+import math
 
 DATA_PATH = Path(os.environ.get("DATA_PATH", "output/incidents_24mo.parquet"))
+CITY_NAME = os.environ.get("CITY_NAME", "Philadelphia, PA")
+CITY_SHORT = CITY_NAME.split(",")[0].strip()
 
 WEIGHTS = {
     "Homicide - Criminal":                      100,
@@ -79,21 +82,32 @@ def bucket_for(code):
 # ── Data loading (once at startup) ────────────────────────────────
 print("Loading crime data...")
 df = pd.read_parquet(DATA_PATH)
+
+# Filter to plausible lon/lat range (drop nulls and projection artifacts)
+med_x, med_y = df["point_x"].median(), df["point_y"].median()
 df = df[
-    (df["point_x"] > -76) & (df["point_x"] < -74.9) &
-    (df["point_y"] > 39.8) & (df["point_y"] < 40.2)
+    (df["point_x"] > med_x - 1) & (df["point_x"] < med_x + 1) &
+    (df["point_y"] > med_y - 1) & (df["point_y"] < med_y + 1)
 ].copy()
+MAP_CENTER = [float(df["point_y"].median()), float(df["point_x"].median())]
+
 df["bucket"] = df["text_general_code"].map(bucket_for)
 df["weight"] = df["text_general_code"].map(WEIGHTS).fillna(1)
 df["ts"] = pd.to_datetime(df["dispatch_date_time"])
 
-to_utm = Transformer.from_crs("EPSG:4326", "EPSG:32618", always_xy=True)
+# Auto-detect UTM zone from data centroid
+utm_zone = int((med_x + 180) / 6) + 1
+utm_hemi = "north" if med_y >= 0 else "south"
+utm_epsg = 32600 + utm_zone if med_y >= 0 else 32700 + utm_zone
+print(f"  UTM zone: {utm_zone}{('N' if med_y >= 0 else 'S')} (EPSG:{utm_epsg})")
+
+to_utm = Transformer.from_crs("EPSG:4326", f"EPSG:{utm_epsg}", always_xy=True)
 df["utm_x"], df["utm_y"] = to_utm.transform(df["point_x"].values, df["point_y"].values)
 tree = cKDTree(df[["utm_x", "utm_y"]].values)
 
 # Pre-build percentile grid
 GRID_STEP_M = 61  # 200ft
-PCTL_HALF = 100  # half-side of 200m × 200m square (~1 Philly block)
+PCTL_HALF = 100  # half-side of 200m × 200m square (~1 city block)
 
 xs = np.arange(df["utm_x"].min(), df["utm_x"].max(), GRID_STEP_M)
 ys = np.arange(df["utm_y"].min(), df["utm_y"].max(), GRID_STEP_M)
@@ -136,10 +150,10 @@ print(f"  Ready. {len(df):,} incidents, {n_populated:,} populated blocks.")
 
 # ── Geocoding ─────────────────────────────────────────────────────
 def geocode(address):
-    if "philadelphia" not in address.lower() and "phila" not in address.lower():
-        address = address.rstrip(",. ") + ", Philadelphia, PA"
-    elif ", pa" not in address.lower() and ", pennsylvania" not in address.lower():
-        address = address.rstrip(",. ") + ", PA"
+    # Append city/state if not already present
+    city_lower = CITY_SHORT.lower()
+    if city_lower not in address.lower():
+        address = address.rstrip(",. ") + ", " + CITY_NAME
 
     url = "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress"
     r = requests.get(url, params={
@@ -241,14 +255,9 @@ def score_address(lat, lon):
         area_sq_mi = 0.1243 ** 2  # ~0.01545 sq mi
 
         # Reference annual crime rates per square mile (rate_per_100k × pop_density / 100,000)
-        # National: violent 360/100k, property 1760/100k, pop density ~94/sq mi (but meaningless)
-        #   Use urban avg ~3,500/sq mi → violent: 360*3500/100000=12.6, property: 1760*3500/100000=61.6
-        # Somerville MA (02144): pop 84,018, area 4.12 sq mi → density 20,393/sq mi
-        #   violent (murder+rape+robbery+assault): 221.4/100k → 221.4*20393/100000=45.1/sq mi
-        #   property (burg+theft+vehicle): 1698.8/100k → 1698.8*20393/100000=346.4/sq mi
-        # Philadelphia: pop 1,632,157, area 134.2 sq mi → density 12,162/sq mi
-        #   violent: 908.7/100k → 908.7*12162/100000=110.5/sq mi
-        #   property: 4547.6/100k → 4547.6*12162/100000=553.1/sq mi
+        # Somerville MA (02144): pop 84,018, density 20,393/sq mi — FBI 2024
+        # Philadelphia: pop 1,632,157, density 12,162/sq mi — FBI 2024
+        # National urban avg density ~3,500/sq mi — FBI UCR 2024
 
         # Crimes per sq mi at this location (annualized)
         loc_violent_density = ann_violent / area_sq_mi
@@ -264,7 +273,7 @@ def score_address(lat, lon):
                 "violent": 50.4, "property": 246.4,
                 "violent_rate": 360.0, "property_rate": 1760.0,
             },
-            "Philadelphia (citywide)": {
+            f"{CITY_SHORT} (citywide)": {
                 "violent": 110.5, "property": 553.1,
                 "violent_rate": 908.7, "property_rate": 4547.6,
             },
@@ -288,7 +297,7 @@ def score_address(lat, lon):
         }
 
     # ── 3×3 grid squares for map overlay ─────────────────────────
-    from_utm = Transformer.from_crs("EPSG:32618", "EPSG:4326", always_xy=True)
+    from_utm = Transformer.from_crs(f"EPSG:{utm_epsg}", "EPSG:4326", always_xy=True)
     side = PCTL_HALF * 2  # 200m
     # Use "All Violent" lens, most recent window for coloring
     recent_wlabel = TIME_WINDOWS[0][0]  # "0-8mo"
@@ -336,7 +345,7 @@ HTML = """<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Philadelphia Crime Scorer</title>
+<title>Crime Scorer</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
@@ -389,9 +398,9 @@ HTML = """<!DOCTYPE html>
 </style>
 </head>
 <body>
-<h1>Philadelphia Crime Scorer</h1>
+<h1>Crime Scorer</h1>
 <div class="search-box">
-  <input type="text" id="address" placeholder="Enter address (e.g. 610 Green Lane)"
+  <input type="text" id="address" placeholder="Enter address"
          autofocus>
   <button id="btn" onclick="score()">Score</button>
 </div>
@@ -402,11 +411,13 @@ HTML = """<!DOCTYPE html>
 <div id="result"></div>
 
 <script>
+const MAP_CENTER = {{ map_center }};
+const CITY_SHORT = '{{ city_short }}';
 const addr = document.getElementById('address');
 addr.addEventListener('keydown', e => { if (e.key === 'Enter') score(); });
 
 // Map setup
-const map = L.map('map').setView([39.9526, -75.1652], 12);
+const map = L.map('map').setView(MAP_CENTER, 12);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   attribution: '&copy; OpenStreetMap contributors', maxZoom: 19
 }).addTo(map);
@@ -628,13 +639,13 @@ function renderResult(data) {
   html += '</table>';
   html += `<p style="color:#666;margin-top:8px;font-size:13px">Ranked against ${data.n_populated.toLocaleString()} populated city blocks.</p>`;
 
-  // Philly percentile assessment
+  // Percentile assessment
   const pctV = data.percentiles['All Violent|0-8mo'];
   let aClass, aText;
-  if (pctV <= 25) { aClass = 'safe'; aText = 'SAFER than 75% of Philadelphia for violent crime'; }
-  else if (pctV <= 50) { aClass = 'below'; aText = 'BELOW average for Philadelphia violent crime'; }
-  else if (pctV <= 75) { aClass = 'above'; aText = 'ABOVE average for Philadelphia violent crime'; }
-  else { aClass = 'high'; aText = 'HIGH violent crime — top quartile in Philadelphia'; }
+  if (pctV <= 25) { aClass = 'safe'; aText = `SAFER than 75% of ${CITY_SHORT} for violent crime`; }
+  else if (pctV <= 50) { aClass = 'below'; aText = `BELOW average for ${CITY_SHORT} violent crime`; }
+  else if (pctV <= 75) { aClass = 'above'; aText = `ABOVE average for ${CITY_SHORT} violent crime`; }
+  else { aClass = 'high'; aText = `HIGH violent crime — top quartile in ${CITY_SHORT}`; }
   html += `<div class="assessment ${aClass}">${aText}</div>`;
   html += '</div>';
 
@@ -644,7 +655,7 @@ function renderResult(data) {
     html += '<div class="section"><h2>Comparison vs. Reference Locations</h2>';
     html += '<table class="pctl-table">';
     html += '<tr><th>Reference</th><th>Violent</th><th>Property</th></tr>';
-    const refs = ['Somerville (02144)', 'US Average (urban)', 'Philadelphia (citywide)'];
+    const refs = Object.keys(a.comparisons);
     refs.forEach(ref => {
       const c = a.comparisons[ref];
       if (!c) return;
@@ -673,7 +684,7 @@ function renderResult(data) {
 
 @app.route("/")
 def index():
-    return render_template_string(HTML)
+    return render_template_string(HTML, map_center=MAP_CENTER, city_short=CITY_SHORT)
 
 
 @app.route("/score", methods=["POST"])
@@ -731,7 +742,7 @@ def score_latlon_endpoint():
         if road and hood:
             matched = f"Near {road}, {hood}"
         elif road:
-            matched = f"Near {road}, Philadelphia"
+            matched = f"Near {road}, {CITY_SHORT}"
     except Exception:
         pass
 

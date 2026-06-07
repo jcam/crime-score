@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """
-Score a Philadelphia address for crime risk.
+Score an address for crime risk.
 
 Usage:
-    python3 score_address.py "1500 Market Street, Philadelphia"
+    python3 score_address.py "1500 Market Street"
     python3 score_address.py "2300 South Broad Street"
 
+Set CITY_NAME env var to change the default city (default: Philadelphia, PA).
+
 Geocodes the address via the Census geocoder, then computes weighted crime
-counts in 400m and 800m radii from the cached incident data, broken out
+counts at multiple radii from the cached incident data, broken out
 by crime bucket (Violent, Burglary, Vehicle, Property, Other).
 """
 
+import os
 import sys
 import requests
 import numpy as np
@@ -20,7 +23,10 @@ from pyproj import Transformer
 from shapely.geometry import MultiPoint
 from pathlib import Path
 
-DATA_PATH = Path(__file__).parent / "output" / "incidents_24mo.parquet"
+DATA_PATH = Path(os.environ.get("DATA_PATH",
+    str(Path(__file__).parent / "output" / "incidents_24mo.parquet")))
+CITY_NAME = os.environ.get("CITY_NAME", "Philadelphia, PA")
+CITY_SHORT = CITY_NAME.split(",")[0].strip()
 
 WEIGHTS = {
     "Homicide - Criminal":                      100,
@@ -91,15 +97,20 @@ def load_data():
         sys.exit(1)
 
     df = pd.read_parquet(DATA_PATH)
+    # Filter to plausible lon/lat range (drop nulls and projection artifacts)
+    med_x, med_y = df["point_x"].median(), df["point_y"].median()
     df = df[
-        (df["point_x"] > -76) & (df["point_x"] < -74.9) &
-        (df["point_y"] > 39.8) & (df["point_y"] < 40.2)
+        (df["point_x"] > med_x - 1) & (df["point_x"] < med_x + 1) &
+        (df["point_y"] > med_y - 1) & (df["point_y"] < med_y + 1)
     ].copy()
     df["bucket"] = df["text_general_code"].map(bucket_for)
     df["weight"] = df["text_general_code"].map(WEIGHTS).fillna(1)
     df["ts"] = pd.to_datetime(df["dispatch_date_time"])
 
-    to_utm = Transformer.from_crs("EPSG:4326", "EPSG:32618", always_xy=True)
+    # Auto-detect UTM zone from data centroid
+    utm_zone = int((med_x + 180) / 6) + 1
+    utm_epsg = 32600 + utm_zone if med_y >= 0 else 32700 + utm_zone
+    to_utm = Transformer.from_crs("EPSG:4326", f"EPSG:{utm_epsg}", always_xy=True)
     df["utm_x"], df["utm_y"] = to_utm.transform(df["point_x"].values, df["point_y"].values)
     tree = cKDTree(df[["utm_x", "utm_y"]].values)
 
@@ -227,19 +238,19 @@ def percentile_rank(df, tree, to_utm, lat, lon, half_side=100, grid_step_m=61):
 def main():
     if len(sys.argv) < 2:
         print("Usage: python3 score_address.py \"ADDRESS\"")
-        print("Example: python3 score_address.py \"1500 Market Street, Philadelphia\"")
+        print(f"Example: python3 score_address.py \"1500 Market Street\"")
+        print(f"Default city: {CITY_NAME} (set CITY_NAME env var to change)")
         sys.exit(1)
 
     address = sys.argv[1]
-    # Append Philadelphia, PA if not already present
-    if "philadelphia" not in address.lower() and "phila" not in address.lower():
-        address = address.rstrip(",. ") + ", Philadelphia, PA"
-    elif ", pa" not in address.lower() and ", pennsylvania" not in address.lower():
-        address = address.rstrip(",. ") + ", PA"
+    # Append city/state if not already present
+    city_lower = CITY_SHORT.lower()
+    if city_lower not in address.lower():
+        address = address.rstrip(",. ") + ", " + CITY_NAME
     print(f"Geocoding: {address}")
     geo = geocode(address)
     if geo is None:
-        print("ERROR: Could not geocode that address. Try adding ', Philadelphia, PA'")
+        print(f"ERROR: Could not geocode that address. Try adding ', {CITY_NAME}'")
         sys.exit(1)
 
     print(f"  Matched: {geo['matched']}")
