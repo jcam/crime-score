@@ -3,6 +3,7 @@
 ## 2026-06-07
 
 ### Added
+- AGENTS.md with full instructions for generating parquet files for new cities
 - Geolocation ("My Location") button on the map for mobile use
 - Browser history support — back/forward navigation works, URLs are shareable
 - Page title updates to `Crime Score: <location>` for browsable history
