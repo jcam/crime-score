@@ -113,6 +113,75 @@ def save_config(config):
     CONFIG_PATH.write_text(json.dumps(config, indent=2) + "\n")
 
 
+# ── Rate limiting ────────────────────────────────────────────────
+class RateLimiter:
+    """In-memory sliding-window rate limiter, keyed by IP address."""
+
+    def __init__(self):
+        self._windows = {}  # (ip, bucket) -> list of timestamps
+        self._lock = threading.Lock()
+
+    def _cleanup(self, now):
+        """Purge entries older than 10 minutes to bound memory."""
+        cutoff = now - 600
+        stale = [k for k, ts in self._windows.items() if ts and ts[-1] < cutoff]
+        for k in stale:
+            del self._windows[k]
+
+    def is_allowed(self, ip, bucket, max_requests, window_secs):
+        """Return True if the request is within the rate limit."""
+        now = _time.time()
+        key = (ip, bucket)
+        with self._lock:
+            if len(self._windows) > 10000:
+                self._cleanup(now)
+
+            timestamps = self._windows.get(key, [])
+            cutoff = now - window_secs
+            # Drop expired entries
+            timestamps = [t for t in timestamps if t > cutoff]
+
+            if len(timestamps) >= max_requests:
+                self._windows[key] = timestamps
+                return False
+
+            timestamps.append(now)
+            self._windows[key] = timestamps
+            return True
+
+
+_limiter = RateLimiter()
+
+# Limits: (max_requests, window_seconds)
+RATE_LIMITS = {
+    "login":  (5, 60),       # 5 attempts per minute — brute force protection
+    "score":  (30, 60),      # 30 scores per minute
+    "admin":  (20, 60),      # 20 admin API calls per minute
+}
+
+
+def rate_limit(bucket):
+    """Decorator that applies a rate limit from RATE_LIMITS."""
+    max_req, window = RATE_LIMITS[bucket]
+    def decorator(f):
+        @functools.wraps(f)
+        def wrapped(*args, **kwargs):
+            ip = request.headers.get("X-Forwarded-For", request.remote_addr) or "unknown"
+            # Take the first IP if X-Forwarded-For has a chain
+            ip = ip.split(",")[0].strip()
+            if not _limiter.is_allowed(ip, bucket, max_req, window):
+                if request.is_json or request.headers.get("Accept", "").startswith("application/json"):
+                    return jsonify({"error": "Too many requests. Please try again later."}), 429
+                return (
+                    "<h2>Too many requests</h2>"
+                    "<p>Please wait a minute and try again.</p>"
+                    '<p><a href="javascript:history.back()">Go back</a></p>'
+                ), 429
+            return f(*args, **kwargs)
+        return wrapped
+    return decorator
+
+
 # ── Authentication ───────────────────────────────────────────────
 def _hash_password(password):
     """SHA-256 hash for storing passwords in config."""
@@ -1210,6 +1279,7 @@ LOGIN_HTML = """<!DOCTYPE html>
 
 
 @app.route("/login", methods=["GET", "POST"])
+@rate_limit("login")
 def login():
     next_url = request.args.get("next", request.form.get("next", "/admin"))
     setup = request.args.get("setup") == "1"
@@ -1240,6 +1310,7 @@ def login():
 
 
 @app.route("/setup", methods=["POST"])
+@rate_limit("login")
 def setup():
     # Only allow setup if no credentials are configured yet
     if auth_configured():
@@ -1310,6 +1381,7 @@ def admin():
 
 @app.route("/admin/config", methods=["POST"])
 @login_required
+@rate_limit("admin")
 def admin_config():
     body = request.get_json()
     city_name = body.get("city_name", "").strip()
@@ -1324,6 +1396,7 @@ def admin_config():
 
 @app.route("/admin/pull", methods=["POST"])
 @login_required
+@rate_limit("admin")
 def admin_pull():
     body = request.get_json()
     script = body.get("script", "")
@@ -1351,6 +1424,7 @@ def admin_pull_status():
 
 @app.route("/admin/reload", methods=["POST"])
 @login_required
+@rate_limit("admin")
 def admin_reload():
     try:
         load_data()
@@ -1360,6 +1434,7 @@ def admin_reload():
 
 
 @app.route("/score", methods=["POST"])
+@rate_limit("score")
 def score_endpoint():
     if not S.loaded:
         return jsonify({"error": "No data loaded. Go to /admin to generate data."})
@@ -1393,6 +1468,7 @@ def score_endpoint():
 
 
 @app.route("/score_latlon", methods=["POST"])
+@rate_limit("score")
 def score_latlon_endpoint():
     if not S.loaded:
         return jsonify({"error": "No data loaded. Go to /admin to generate data."})
