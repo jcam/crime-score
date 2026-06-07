@@ -3,6 +3,7 @@
 ## 2026-06-07
 
 ### Added
+- Login and session management for admin page (account setup on first visit, or via `ADMIN_USER`/`ADMIN_PASS` env vars)
 - Admin page (`/admin`) for managing data sources, city configuration, and triggering data reloads
 - `pull_philadelphia.py` — standalone data pipeline extracted from `build_heatmap.py`
 - `docker-compose.yml` with named volume for persistent data storage

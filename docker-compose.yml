@@ -8,6 +8,9 @@ services:
     environment:
       - DATA_PATH=/data/incidents_24mo.parquet
       - CONFIG_PATH=/data/config.json
+      # Set these for initial admin access, or create an account at /admin on first visit
+      # - ADMIN_USER=admin
+      # - ADMIN_PASS=changeme
 
 volumes:
   crime-data:

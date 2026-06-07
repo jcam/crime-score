@@ -6,13 +6,17 @@ Flask web UI for the crime address scorer.
 import os
 import glob
 import json
+import secrets
 import subprocess
 import threading
 import time as _time
+import hashlib
+import hmac
+import functools
 import numpy as np
 import pandas as pd
 import requests
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify, render_template_string, session, redirect, url_for
 from scipy.spatial import cKDTree
 from pyproj import Transformer
 from pathlib import Path
@@ -21,6 +25,8 @@ DATA_PATH = Path(os.environ.get("DATA_PATH", "output/incidents_24mo.parquet"))
 DATA_DIR = DATA_PATH.parent
 CONFIG_PATH = Path(os.environ.get("CONFIG_PATH", str(DATA_DIR / "config.json")))
 SCRIPT_DIR = Path(__file__).parent
+ADMIN_USER = os.environ.get("ADMIN_USER", "")
+ADMIN_PASS = os.environ.get("ADMIN_PASS", "")
 
 WEIGHTS = {
     "Homicide - Criminal":                      100,
@@ -105,6 +111,66 @@ def load_config():
 def save_config(config):
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     CONFIG_PATH.write_text(json.dumps(config, indent=2) + "\n")
+
+
+# ── Authentication ───────────────────────────────────────────────
+def _hash_password(password):
+    """SHA-256 hash for storing passwords in config."""
+    return hashlib.sha256(password.encode()).hexdigest()
+
+
+def _get_secret_key():
+    """Get or generate a persistent secret key for Flask sessions."""
+    config = load_config()
+    key = config.get("secret_key")
+    if not key:
+        key = secrets.token_hex(32)
+        config["secret_key"] = key
+        save_config(config)
+    return key
+
+
+def check_credentials(username, password):
+    """Check credentials against config (hashed) or env vars (plaintext)."""
+    config = load_config()
+
+    # First check config.json (hashed passwords)
+    stored_user = config.get("admin_user")
+    stored_hash = config.get("admin_pass_hash")
+    if stored_user and stored_hash:
+        return (hmac.compare_digest(username, stored_user) and
+                hmac.compare_digest(_hash_password(password), stored_hash))
+
+    # Fall back to env vars
+    if ADMIN_USER and ADMIN_PASS:
+        return (hmac.compare_digest(username, ADMIN_USER) and
+                hmac.compare_digest(password, ADMIN_PASS))
+
+    # No credentials configured — deny access
+    return False
+
+
+def auth_configured():
+    """Check if any authentication is configured."""
+    config = load_config()
+    if config.get("admin_user") and config.get("admin_pass_hash"):
+        return True
+    if ADMIN_USER and ADMIN_PASS:
+        return True
+    return False
+
+
+def login_required(f):
+    """Decorator to require login for admin routes."""
+    @functools.wraps(f)
+    def decorated(*args, **kwargs):
+        if not auth_configured():
+            # No auth configured — redirect to setup
+            return redirect(url_for("login", setup="1"))
+        if not session.get("logged_in"):
+            return redirect(url_for("login", next=request.path))
+        return f(*args, **kwargs)
+    return decorated
 
 
 # ── Shared mutable state ────────────────────────────────────────
@@ -479,6 +545,9 @@ def run_pull_script(script_name):
 
 # ── Flask app ─────────────────────────────────────────────────────
 app = Flask(__name__)
+app.secret_key = _get_secret_key()
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
 HTML = """<!DOCTYPE html>
 <html>
@@ -869,7 +938,7 @@ ADMIN_HTML = """<!DOCTYPE html>
 </head>
 <body>
 <h1>Crime Scorer — Admin</h1>
-<p class="subtitle"><a href="/">&larr; Back to scorer</a></p>
+<p class="subtitle"><a href="/">&larr; Back to scorer</a> &nbsp;|&nbsp; <a href="/logout">Log out</a></p>
 
 <div class="section">
   <h2>Configuration</h2>
@@ -1075,9 +1144,149 @@ function pollStatus(script) {
 </html>"""
 
 
+LOGIN_HTML = """<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Crime Scorer — Login</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+         background: #f5f5f5; color: #333; display: flex; align-items: center;
+         justify-content: center; min-height: 100vh; }
+  .login-card { background: white; border-radius: 12px; padding: 32px; width: 100%;
+                max-width: 380px; box-shadow: 0 2px 12px rgba(0,0,0,0.1); }
+  .login-card h1 { font-size: 22px; margin-bottom: 4px; }
+  .login-card .subtitle { color: #888; font-size: 13px; margin-bottom: 24px; }
+  label { font-weight: 600; display: block; margin-bottom: 4px; font-size: 14px; }
+  input[type=text], input[type=password] {
+    padding: 10px 12px; font-size: 15px; border: 2px solid #ddd; border-radius: 6px;
+    width: 100%; margin-bottom: 16px; }
+  input:focus { outline: none; border-color: #4a90d9; }
+  .btn { display: block; width: 100%; padding: 12px; font-size: 15px; font-weight: 600;
+         background: #4a90d9; color: white; border: none; border-radius: 6px; cursor: pointer; }
+  .btn:hover { background: #357abd; }
+  .error { color: #c0392b; font-size: 13px; margin-bottom: 12px; font-weight: 600; }
+  .setup-note { background: #fef9e7; border: 1px solid #f9e79f; border-radius: 6px;
+                padding: 12px; font-size: 13px; color: #7d6608; margin-bottom: 20px; }
+  .setup-note code { background: #f0e68c; padding: 1px 4px; border-radius: 3px; }
+</style>
+</head>
+<body>
+<div class="login-card">
+  <h1>Crime Scorer</h1>
+  <p class="subtitle">Admin login required</p>
+  {% if setup %}
+  <div class="setup-note">
+    No admin credentials configured. Set <code>ADMIN_USER</code> and <code>ADMIN_PASS</code>
+    environment variables, or create an account below on first use.
+  </div>
+  <form method="POST" action="/setup">
+    <input type="hidden" name="next" value="{{ next }}">
+    <label for="username">Choose username</label>
+    <input type="text" id="username" name="username" autocomplete="username" required autofocus>
+    <label for="password">Choose password</label>
+    <input type="password" id="password" name="password" autocomplete="new-password" required>
+    <label for="password2">Confirm password</label>
+    <input type="password" id="password2" name="password2" autocomplete="new-password" required>
+    {% if error %}<div class="error">{{ error }}</div>{% endif %}
+    <button type="submit" class="btn">Create Account &amp; Log In</button>
+  </form>
+  {% else %}
+  <form method="POST" action="/login">
+    <input type="hidden" name="next" value="{{ next }}">
+    <label for="username">Username</label>
+    <input type="text" id="username" name="username" autocomplete="username" required autofocus>
+    <label for="password">Password</label>
+    <input type="password" id="password" name="password" autocomplete="current-password" required>
+    {% if error %}<div class="error">{{ error }}</div>{% endif %}
+    <button type="submit" class="btn">Log In</button>
+  </form>
+  {% endif %}
+</div>
+</body>
+</html>"""
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    next_url = request.args.get("next", request.form.get("next", "/admin"))
+    setup = request.args.get("setup") == "1"
+
+    if request.method == "GET":
+        # Already logged in?
+        if session.get("logged_in") and auth_configured():
+            return redirect(next_url)
+        return render_template_string(LOGIN_HTML, next=next_url, setup=setup, error=None)
+
+    # POST — login attempt
+    username = request.form.get("username", "").strip()
+    password = request.form.get("password", "")
+
+    if not username or not password:
+        return render_template_string(LOGIN_HTML, next=next_url, setup=False,
+                                       error="Username and password are required.")
+
+    if check_credentials(username, password):
+        session["logged_in"] = True
+        session["username"] = username
+        session.permanent = True
+        app.permanent_session_lifetime = __import__("datetime").timedelta(days=30)
+        return redirect(next_url)
+
+    return render_template_string(LOGIN_HTML, next=next_url, setup=False,
+                                   error="Invalid username or password.")
+
+
+@app.route("/setup", methods=["POST"])
+def setup():
+    # Only allow setup if no credentials are configured yet
+    if auth_configured():
+        return redirect(url_for("login"))
+
+    next_url = request.form.get("next", "/admin")
+    username = request.form.get("username", "").strip()
+    password = request.form.get("password", "")
+    password2 = request.form.get("password2", "")
+
+    if not username or not password:
+        return render_template_string(LOGIN_HTML, next=next_url, setup=True,
+                                       error="Username and password are required.")
+    if len(password) < 4:
+        return render_template_string(LOGIN_HTML, next=next_url, setup=True,
+                                       error="Password must be at least 4 characters.")
+    if password != password2:
+        return render_template_string(LOGIN_HTML, next=next_url, setup=True,
+                                       error="Passwords do not match.")
+
+    # Save credentials to config
+    config = load_config()
+    config["admin_user"] = username
+    config["admin_pass_hash"] = _hash_password(password)
+    save_config(config)
+
+    # Log in immediately
+    session["logged_in"] = True
+    session["username"] = username
+    session.permanent = True
+    app.permanent_session_lifetime = __import__("datetime").timedelta(days=30)
+    return redirect(next_url)
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect("/")
+
+
 @app.route("/")
 def index():
     if not S.loaded:
+        if not auth_configured():
+            return redirect(url_for("login", setup="1"))
+        if not session.get("logged_in"):
+            return redirect(url_for("login", next="/admin"))
         return render_template_string(ADMIN_HTML,
             city_name=S.city_name, loaded=False, row_count=0,
             date_min="", date_max="", n_populated=0,
@@ -1086,8 +1295,8 @@ def index():
 
 
 @app.route("/admin")
+@login_required
 def admin():
-    config = load_config()
     return render_template_string(ADMIN_HTML,
         city_name=S.city_name,
         loaded=S.loaded,
@@ -1100,6 +1309,7 @@ def admin():
 
 
 @app.route("/admin/config", methods=["POST"])
+@login_required
 def admin_config():
     body = request.get_json()
     city_name = body.get("city_name", "").strip()
@@ -1113,6 +1323,7 @@ def admin_config():
 
 
 @app.route("/admin/pull", methods=["POST"])
+@login_required
 def admin_pull():
     body = request.get_json()
     script = body.get("script", "")
@@ -1130,6 +1341,7 @@ def admin_pull():
 
 
 @app.route("/admin/pull_status")
+@login_required
 def admin_pull_status():
     script = request.args.get("script", "")
     with pull_lock:
@@ -1138,6 +1350,7 @@ def admin_pull_status():
 
 
 @app.route("/admin/reload", methods=["POST"])
+@login_required
 def admin_reload():
     try:
         load_data()
