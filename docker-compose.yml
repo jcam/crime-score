@@ -1,0 +1,13 @@
+services:
+  app:
+    build: .
+    ports:
+      - "5050:5000"
+    volumes:
+      - crime-data:/data
+    environment:
+      - DATA_PATH=/data/incidents_24mo.parquet
+      - CONFIG_PATH=/data/config.json
+
+volumes:
+  crime-data:

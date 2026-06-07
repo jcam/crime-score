@@ -13,10 +13,13 @@ RUN pip install --no-cache-dir \
     pyarrow
 
 COPY app.py .
-COPY output/incidents_24mo.parquet output/
+COPY pull_*.py .
 
-ENV DATA_PATH=output/incidents_24mo.parquet
-ENV CITY_NAME="Philadelphia, PA"
+# Copy default data if available (volume mount overrides at runtime)
+COPY output/incidents_24mo.parquet /data/
+
+ENV DATA_PATH=/data/incidents_24mo.parquet
+ENV CONFIG_PATH=/data/config.json
 
 EXPOSE 5000
 

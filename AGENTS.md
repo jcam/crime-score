@@ -84,19 +84,54 @@ The general approach:
    df.to_parquet("output/incidents_24mo.parquet")
    ```
 
+### Pull Script Convention
+
+Each data pipeline should be a file named `pull_<city>.py` supporting these flags:
+
+- `--meta` — Print a JSON metadata object to stdout and exit. The admin page calls this to discover available sources.
+- `--output-dir DIR` — Write `incidents_24mo.parquet` to this directory (default: `output`)
+- `--force` — Re-download even if a cached parquet exists
+
+The `META` dict must include:
+
+```python
+META = {
+    "city_name": "Chicago, IL",           # Used for geocoding and UI labels
+    "description": "Human-readable source description",
+    "source_url": "https://...",          # Optional, for documentation
+    "citywide_rates": {                   # FBI UCR data for this city
+        "violent": 110.5,                 # violent crimes per sq mi per year
+        "property": 553.1,               # property crimes per sq mi per year
+        "violent_rate": 908.7,            # violent crimes per 100k pop
+        "property_rate": 4547.6,          # property crimes per 100k pop
+    },
+}
+```
+
+When the admin page runs a pull script, it reads the META and updates `config.json` with the city name and rates. See `pull_philadelphia.py` for a working example.
+
 ### Example: Minimal Pipeline Structure
 
 ```python
 #!/usr/bin/env python3
 """Pull crime data for <City> and save as parquet."""
 
+import argparse
+import json
+import sys
 import requests
 import pandas as pd
 from pathlib import Path
 
-OUT = Path("output")
-OUT.mkdir(exist_ok=True)
-CACHE = OUT / "incidents_24mo.parquet"
+META = {
+    "city_name": "Chicago, IL",
+    "description": "Crime incidents from Chicago Data Portal (Socrata)",
+    "source_url": "https://data.cityofchicago.org/resource/ijzp-q8t2.json",
+    "citywide_rates": {
+        "violent": 95.0, "property": 420.0,
+        "violent_rate": 780.0, "property_rate": 3450.0,
+    },
+}
 
 # City-specific crime type mapping
 TYPE_MAP = {
@@ -121,9 +156,14 @@ TYPE_MAP = {
 }
 
 
-def pull():
-    if CACHE.exists():
-        return pd.read_parquet(CACHE)
+def pull(output_dir, force=False):
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    cache = output_dir / "incidents_24mo.parquet"
+
+    if cache.exists() and not force:
+        print(f"Using cached data: {cache}")
+        return cache
 
     # Paginate through the API
     frames = []
@@ -158,39 +198,52 @@ def pull():
     # Drop rows with missing coordinates
     df = df.dropna(subset=["point_x", "point_y"])
 
-    df[["text_general_code", "point_x", "point_y", "dispatch_date_time"]].to_parquet(CACHE)
-    print(f"Saved {len(df)} rows to {CACHE}")
-    return df
+    df[["text_general_code", "point_x", "point_y", "dispatch_date_time"]].to_parquet(cache)
+    print(f"Saved {len(df)} rows to {cache}")
+    return cache
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Pull Chicago crime data")
+    parser.add_argument("--output-dir", default="output")
+    parser.add_argument("--force", action="store_true")
+    parser.add_argument("--meta", action="store_true")
+    args = parser.parse_args()
+
+    if args.meta:
+        json.dump(META, sys.stdout)
+        sys.exit(0)
+
+    pull(args.output_dir, force=args.force)
 
 
 if __name__ == "__main__":
-    pull()
+    main()
 ```
 
 ## Running the Scorer with a New City
 
-Once you have the parquet file:
+Once you have the parquet file and pull script:
 
 ```bash
 # CLI
 CITY_NAME="Chicago, IL" python3 score_address.py "233 S Wacker Dr"
 
-# Web app
-CITY_NAME="Chicago, IL" python3 app.py
+# Web app (go to /admin to set city name)
+python3 pull_chicago.py
+python3 app.py
 
-# Docker
-docker build -t crime-scorer .
-docker run -d -p 5050:5000 \
-  -e CITY_NAME="Chicago, IL" \
-  crime-scorer
+# Docker Compose (data persists on a named volume)
+docker compose up -d --build
+# Then go to http://localhost:5050/admin to generate data and set city name
 ```
 
-Set `CITY_NAME` to `"City, ST"` format — the city name (before the comma) is used in UI labels and the full value is appended to address searches for geocoding.
+The city name is stored in `config.json` on the data volume and can be changed from the `/admin` page. The `CITY_NAME` env var is still supported as a fallback for the CLI scorer.
 
 If your parquet file is at a non-default location:
 
 ```bash
-DATA_PATH=/path/to/my/data.parquet CITY_NAME="Seattle, WA" python3 app.py
+DATA_PATH=/path/to/my/data.parquet python3 app.py
 ```
 
 ## Reference Crime Rates

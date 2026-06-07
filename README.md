@@ -20,6 +20,7 @@ Flask app with a Leaflet map. Dockerized for easy deployment.
 - Comparison vs. national urban average, a reference city, and the dataset's city
 - Geolocation button for mobile use
 - Browser history support (back/forward, shareable URLs)
+- Admin page (`/admin`) for managing data sources, city config, and triggering data reloads
 
 ### CLI Scorer (`score_address.py`)
 
@@ -49,36 +50,47 @@ Takes ~5 minutes to pull and process ~300k incidents. Results go to `output/`.
 
 For other cities, write a comparable script that produces a parquet file in the expected format. See [AGENTS.md](AGENTS.md).
 
+### Data Pipelines (`pull_*.py`)
+
+Standalone scripts that pull crime data and save as parquet. Each script supports `--meta` (print JSON metadata) and `--output-dir DIR`.
+
+- `pull_philadelphia.py` — Philadelphia via OpenDataPhilly CARTO API
+
+The admin page auto-discovers all `pull_*.py` scripts and shows a "Generate Data" button for each. See [AGENTS.md](AGENTS.md) for writing new pipelines.
+
 ## Quick Start
 
 ```bash
-# Option 1: Use the Philadelphia data pipeline
-python3 build_heatmap.py
+# Option 1: Docker Compose (recommended)
+python3 pull_philadelphia.py            # generate data
+docker compose up -d --build            # build and start
+# Open http://localhost:5050
+# Go to /admin to manage data and config
 
-# Option 2: Bring your own parquet (see AGENTS.md for format)
-cp /path/to/your/incidents.parquet output/incidents_24mo.parquet
-
-# Run the web app directly
+# Option 2: Run directly
 pip install flask pandas numpy scipy pyproj shapely requests pyarrow
-CITY_NAME="Philadelphia, PA" python3 app.py
+python3 pull_philadelphia.py
+python3 app.py
+# Open http://localhost:5000
 
-# Or build and run with Docker
-docker build -t crime-scorer .
-docker run -d -p 5050:5000 \
-  -e CITY_NAME="Philadelphia, PA" \
-  crime-scorer
+# Option 3: Bring your own parquet (see AGENTS.md for format)
+cp /path/to/your/incidents.parquet output/incidents_24mo.parquet
+python3 app.py
+# Then go to /admin to set the city name
 ```
 
-Open http://localhost:5050. Startup takes ~15 seconds to load data and pre-compute the percentile grid (~210k points).
+Startup takes ~15 seconds to load data and pre-compute the percentile grid (~210k points).
 
 ## Configuration
 
-Environment variables:
+City name and citywide crime rates are stored in a JSON config file, editable from the `/admin` page. When using Docker Compose, the config persists on the `crime-data` volume.
+
+Environment variables (override defaults):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DATA_PATH` | `output/incidents_24mo.parquet` | Path to the parquet data file |
-| `CITY_NAME` | `Philadelphia, PA` | City/state appended to address searches and used in UI labels |
+| `CONFIG_PATH` | `<DATA_DIR>/config.json` | Path to the JSON config file |
 
 The UTM projection zone, bounding box, and map center are all auto-detected from the data.
 

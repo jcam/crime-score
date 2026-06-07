@@ -3,6 +3,13 @@
 ## 2026-06-07
 
 ### Added
+- Admin page (`/admin`) for managing data sources, city configuration, and triggering data reloads
+- `pull_philadelphia.py` — standalone data pipeline extracted from `build_heatmap.py`
+- `docker-compose.yml` with named volume for persistent data storage
+- Auto-discovery of `pull_*.py` scripts on admin page via `--meta` convention
+- Config file (`config.json`) on the data volume replaces `CITY_NAME` env var
+- When no data is loaded, the main page redirects to admin for setup
+- Data can be reloaded without restarting the container
 - AGENTS.md with full instructions for generating parquet files for new cities
 - Geolocation ("My Location") button on the map for mobile use
 - Browser history support — back/forward navigation works, URLs are shareable
