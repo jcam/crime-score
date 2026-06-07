@@ -254,7 +254,7 @@ The comparison section in the scorer uses hardcoded reference rates (crimes per 
 - **US Average (urban)**: FBI UCR 2024 national urban average
 - **Citywide**: The dataset's own city (currently uses Philadelphia rates)
 
-To update these for your city, edit the `refs` dict in the `score_address()` function in `app.py` (around line 268) and the matching block in `score_address.py`. The values come from FBI UCR data:
+For the web app, citywide rates are set automatically when you run a pull script (from its `META["citywide_rates"]`) and stored in `config.json`. For the CLI scorer, edit the `refs` dict in `score_address.py` directly. The values come from FBI UCR data:
 
 ```python
 refs = {

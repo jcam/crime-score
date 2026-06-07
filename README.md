@@ -21,6 +21,8 @@ Flask app with a Leaflet map. Dockerized for easy deployment.
 - Geolocation button for mobile use
 - Browser history support (back/forward, shareable URLs)
 - Admin page (`/admin`) for managing data sources, city config, and triggering data reloads
+- Login with session management — account setup on first visit or via env vars
+- Rate limiting per IP (login 5/min, scoring 30/min, admin API 20/min)
 
 ### CLI Scorer (`score_address.py`)
 
@@ -85,12 +87,16 @@ Startup takes ~15 seconds to load data and pre-compute the percentile grid (~210
 
 City name and citywide crime rates are stored in a JSON config file, editable from the `/admin` page. When using Docker Compose, the config persists on the `crime-data` volume.
 
-Environment variables (override defaults):
+Environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DATA_PATH` | `output/incidents_24mo.parquet` | Path to the parquet data file |
 | `CONFIG_PATH` | `<DATA_DIR>/config.json` | Path to the JSON config file |
+| `ADMIN_USER` | *(none)* | Admin username (alternative to first-visit setup) |
+| `ADMIN_PASS` | *(none)* | Admin password (alternative to first-visit setup) |
+
+If `ADMIN_USER`/`ADMIN_PASS` are not set, the first visit to `/admin` prompts you to create an account. Credentials are stored hashed in `config.json` on the data volume.
 
 The UTM projection zone, bounding box, and map center are all auto-detected from the data.
 
