@@ -7,13 +7,14 @@
 - Browser history support — back/forward navigation works, URLs are shareable
 - Page title updates to `Crime Score: <location>` for browsable history
 - 3x3 grid of 200m squares drawn on the map, color-coded by violent crime percentile
-- Comparison vs. reference locations: national urban average, Somerville MA (02144), Philadelphia citywide
+- Comparison vs. reference locations: national urban average, Somerville MA (02144), dataset city
 - Reverse geocoding for map clicks via OpenStreetMap Nominatim (e.g. "Near Titan Street, Pennsport")
 - Map click URLs use `?lat=...&lon=...` so refreshes work correctly
 - Address search URLs use `?q=...` for shareable links
 
 ### Changed
-- Scoring geometry switched from circles to 200m x 200m squares (Chebyshev distance) for percentile ranking, top crimes, and reference comparison — better fit for Philadelphia's grid layout
+- Removed hardcoded Philadelphia references — city name, bounding box, UTM zone, and map center are now auto-detected from the data or configurable via `CITY_NAME` env var
+- Scoring geometry switched from circles to 200m x 200m squares (Chebyshev distance) for percentile ranking, top crimes, and reference comparison — better fit for grid-layout cities
 - Time windows changed from 4 x 6-month to 3 x 8-month non-overlapping periods
 - Top crime types, percentile rank, and reference comparison all use consistent 200m square
 
