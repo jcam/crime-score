@@ -183,9 +183,22 @@ def rate_limit(bucket):
 
 
 # ── Authentication ───────────────────────────────────────────────
-def _hash_password(password):
-    """SHA-256 hash for storing passwords in config."""
-    return hashlib.sha256(password.encode()).hexdigest()
+def _hash_password(password, salt=None):
+    """PBKDF2-SHA256 hash for storing passwords in config."""
+    if salt is None:
+        salt = secrets.token_hex(16)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), iterations=600_000)
+    return f"{salt}${dk.hex()}"
+
+
+def _verify_password(password, stored):
+    """Verify a password against a stored PBKDF2 hash (or legacy SHA-256)."""
+    if "$" not in stored:
+        # Legacy SHA-256 hash — verify and caller should re-hash
+        return hmac.compare_digest(hashlib.sha256(password.encode()).hexdigest(), stored)
+    salt, dk_hex = stored.split("$", 1)
+    candidate = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), iterations=600_000)
+    return hmac.compare_digest(candidate.hex(), dk_hex)
 
 
 def _get_secret_key():
@@ -207,8 +220,15 @@ def check_credentials(username, password):
     stored_user = config.get("admin_user")
     stored_hash = config.get("admin_pass_hash")
     if stored_user and stored_hash:
-        return (hmac.compare_digest(username, stored_user) and
-                hmac.compare_digest(_hash_password(password), stored_hash))
+        if not hmac.compare_digest(username, stored_user):
+            return False
+        if not _verify_password(password, stored_hash):
+            return False
+        # Upgrade legacy SHA-256 hash to PBKDF2 on successful login
+        if "$" not in stored_hash:
+            config["admin_pass_hash"] = _hash_password(password)
+            save_config(config)
+        return True
 
     # Fall back to env vars
     if ADMIN_USER and ADMIN_PASS:
