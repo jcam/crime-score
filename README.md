@@ -63,25 +63,21 @@ The admin page auto-discovers all `pull_*.py` scripts and shows a "Generate Data
 ## Quick Start
 
 ```bash
-# Option 1: Docker Compose (recommended)
-python3 pull_philadelphia.py            # generate data
-docker compose up -d --build            # build and start
+docker compose up -d --build
 # Open http://localhost:5050
-# Go to /admin to manage data and config
-
-# Option 2: Run directly
-pip install flask pandas numpy scipy pyproj shapely requests pyarrow
-python3 pull_philadelphia.py
-python3 app.py
-# Open http://localhost:5000
-
-# Option 3: Bring your own parquet (see AGENTS.md for format)
-cp /path/to/your/incidents.parquet output/incidents_24mo.parquet
-python3 app.py
-# Then go to /admin to set the city name
 ```
 
-Startup takes ~15 seconds to load data and pre-compute the percentile grid (~210k points).
+On first launch there's no data — the app redirects to a setup page where you create an admin account, then to `/admin` where you click "Generate Data" to pull incidents. Data is stored on a Docker volume and persists across rebuilds.
+
+For local development without Docker:
+
+```bash
+pip install flask pandas numpy scipy pyproj shapely requests pyarrow
+python3 app.py
+# Open http://localhost:5000/admin to generate data
+```
+
+Startup with data takes ~15 seconds to load and pre-compute the percentile grid (~210k points).
 
 ## Configuration
 

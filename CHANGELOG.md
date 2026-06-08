@@ -23,6 +23,7 @@
 - Address search URLs use `?q=...` for shareable links
 
 ### Changed
+- Docker image no longer requires local data — app launches with no parquet file and directs to admin for setup
 - Removed hardcoded Philadelphia references — city name, bounding box, UTM zone, and map center are now auto-detected from the data or configurable via `CITY_NAME` env var
 - Scoring geometry switched from circles to 200m x 200m squares (Chebyshev distance) for percentile ranking, top crimes, and reference comparison — better fit for grid-layout cities
 - Time windows changed from 4 x 6-month to 3 x 8-month non-overlapping periods

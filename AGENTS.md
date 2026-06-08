@@ -223,28 +223,23 @@ if __name__ == "__main__":
 
 ## Running the Scorer with a New City
 
-Once you have the parquet file and pull script:
+Once you've added a `pull_<city>.py` script:
 
 ```bash
-# CLI
-CITY_NAME="Chicago, IL" python3 score_address.py "233 S Wacker Dr"
-
-# Web app (go to /admin to set city name)
-python3 pull_chicago.py
-python3 app.py
-
-# Docker Compose (data persists on a named volume)
+# Docker Compose — data generation happens in the admin UI
 docker compose up -d --build
-# Then go to http://localhost:5050/admin to generate data and set city name
+# Go to http://localhost:5050/admin, click "Generate Data" for your city
 ```
 
-The city name is stored in `config.json` on the data volume and can be changed from the `/admin` page. The `CITY_NAME` env var is still supported as a fallback for the CLI scorer.
+The admin page auto-discovers all `pull_*.py` scripts in the image. When you run one, it updates `config.json` with the city name and crime rates from the script's `META`. No local Python environment or dependencies needed — everything runs inside the container.
 
-If your parquet file is at a non-default location:
+For the CLI scorer (requires local Python + deps):
 
 ```bash
-DATA_PATH=/path/to/my/data.parquet python3 app.py
+CITY_NAME="Chicago, IL" python3 score_address.py "233 S Wacker Dr"
 ```
+
+The `CITY_NAME` env var is only needed for the CLI tool. The web app reads city name from `config.json`.
 
 ## Reference Crime Rates
 
